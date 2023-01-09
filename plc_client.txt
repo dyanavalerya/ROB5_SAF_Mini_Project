@@ -1,0 +1,129 @@
+//0. Connect to Server then the FESTO MODULE
+//1. Wait for carrier
+//2. Wait for RFID to clear
+//3. Wait for RFID to connect
+//4. Read the RFID tag
+//5. Get the carrier ID
+//6. Get date and time
+//7. Make XML
+//8. If Client connected to Server, send the message - XML formatted string
+//9. Wait for response from the Server - time in ms
+//10. Transform received data from Server into a time variable format
+//11. Activate timer using the processing time (varDataIn) sent by the server and wait for timer
+//12. Pull down the stopper and wait for carrier to move
+
+
+CASE state OF
+    0:
+    // Here the PLC connects to the Server, make sure to change the ip and port to correct ones
+    // we only want to run this once otherwise the connection will be messed up 
+    IF bBool THEN       
+        tcpClient.Connect(sIP:= '172.20.0.105', uiPort := 6666);
+        bBool := FALSE;
+    END_IF
+    
+    IO.xQA1_RIGHT := TRUE; // Start the track
+    IO.xMB20 := FALSE; // Pull the stopper up
+    RFID.ClearError(); // RFID stuff, don't know if it's important
+    
+    // Here we are checking whether we made the connection to the TCP server or not
+    // We also check whether the connectIOn is ready to send/receivw
+    IF tcpClient.xConnected AND tcpClient.xReady THEN   
+        state := 1;
+    END_IF
+    
+    // Wait for carrier
+    1:
+    IF IO.xBG21 = TRUE THEN
+        IO.xMB20 := FALSE;
+        state := 2;
+    END_IF  
+        
+    // Wait for RFID to clear
+    2:
+    IF RFID.xReady THEN
+        RFID.Connect(usiNodeId := 32, usiNetworkID := 0, usiChannel := 1);  
+        state := 3;
+    END_IF
+    
+    // Wait for RFID to connect
+    3:
+    IF RFID.xReady THEN
+        state := 4;
+    END_IF
+    
+    // Read the RFID tag
+    4:
+    IF RFID.xReady THEN
+        RFID.ReadTag(uiStartAddress := 0, uiDataLength := SIZEOF(RFIDdata), pData:= ADR(RFIDdata)); 
+        state := 5;
+    END_IF
+        
+    // Get the carrier ID
+    5:
+    IF RFID.xReady THEN
+        correctID := RFIDdata.uiCarrierID;
+        //correctID := DC_ECP.SwapWORD(RFIDdata.uiCarrierID);
+        state := 6;
+    END_IF
+    
+    // Get date and time
+    6:
+    getTime.xExecute := TRUE;
+    IF getTime.xDone THEN
+        timeData := getTime.dtDateAndTime;
+        timeString := DT_TO_STRING(timeData);
+        state := 7; 
+    END_IF      
+    
+    // Make XML
+    7:
+    bigString := '<?xml versIOn="1.0" encoding="UTF-8" ?><RFID><carrierID>';    
+    bigString := CONCAT(bigString,UINT_TO_STRING(correctID));   
+    bigString := CONCAT (bigString,'</carrierID><statIOnID>STPLC_06</statIOnID><dateAndTime>');                                 
+    bigString := CONCAT(bigString,timeString);
+    bigString := CONCAT(bigString,'</dateAndTime></RFID>end');
+    state := 8;
+    
+    // If Client connected to Server, send the message request
+    8:  
+    IF tcpClient.xReady THEN    
+        tcpClient.Send(ADR(bigString),SIZEOF(bigString));
+        state := 9;
+    END_IF
+    
+    // Wait for response from the Server
+    9:
+    IF tcpClient.xReady THEN
+        tcpClient.Receive(ADR(varDataIn),SIZEOF(varDataIn));        
+        state := 10;
+    END_IF
+    
+    // Transform received data from Server into a time variable format
+    10:
+    zigzagString := CONCAT('T#',varDataIn);
+    zigzagString := CONCAT(zigzagString,'ms');  
+    state := 11;
+    
+    // Activate timer using the processing time (varDataIn) sent by the server and wait for timer
+    11:
+    waitTime := STRING_TO_TIME(zigzagString);
+    timer(IN:=TRUE,PT:= waitTime);  
+    IF timer.Q = TRUE THEN
+        timer(IN := FALSE);
+        state := 12;    
+    END_IF
+    
+    // Pull down the stopper and wait for carrier to move
+    12:
+    IO.xMB20 := TRUE;
+    IF NOT IO.xBG21 THEN
+        IO.xMB20 := FALSE;
+        state := 1;
+    END_IF
+    
+END_CASE
+timer();
+RFID();
+tcpClient();
+getTime();
